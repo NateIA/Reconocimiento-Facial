@@ -5,3 +5,6 @@ pandas
 Pillow
 tk
 openpyxl
+pip install dlib==19.24.2
+pip install cmake==3.25.2
+python -m pip install dlib-19.24.99-cp312-cp312-win_amd64.whl
