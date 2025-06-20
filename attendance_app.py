@@ -740,7 +740,7 @@ class TakeAttendanceApp:
             df = pd.read_csv(csv_path)
         for nombre in presentes:
             if not ((df["Nombre"] == nombre) & (df["Fecha"] == fecha_str)).any():
-                df = df.append({"Nombre": nombre, "Fecha": fecha_str, "Hora": hora_str}, ignore_index=True)
+                df.loc[len(df)] = {"Nombre": nombre, "Fecha": fecha_str, "Hora": hora_str}
         df.to_csv(csv_path, index=False)
 
         conn = sqlite3.connect("database/attendance.db")
