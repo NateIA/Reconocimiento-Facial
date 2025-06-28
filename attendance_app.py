@@ -8,6 +8,7 @@ import face_recognition
 import numpy as np
 import pandas as pd
 from datetime import datetime
+import threading
 
 # ------------------------------------------------------------
 # Funciones de inicialización y logging
@@ -116,13 +117,11 @@ class LoginApp:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT role, assigned_grade, assigned_section FROM users WHERE username=? AND password=?",
-            (username, password)
-        )
+            (username, password))
         result_users = cursor.fetchone()
         cursor.execute(
             "SELECT role FROM admin WHERE username=? AND password=?",
-            (username, password)
-        )
+            (username, password))
         result_admin = cursor.fetchone()
         conn.close()
 
@@ -278,8 +277,7 @@ class RegisterTeacherApp:
         try:
             cursor.execute(
                 "INSERT INTO users (username, password, role, assigned_grade, assigned_section) VALUES (?, ?, ?, ?, ?)",
-                (username, password, "docente", grade, section)
-            )
+                (username, password, "docente", grade, section))
             conn.commit()
             messagebox.showinfo("Éxito", "Docente registrado correctamente.")
             self.username_entry.delete(0, tk.END)
@@ -385,8 +383,7 @@ class RegisterStudentApp:
         try:
             cursor.execute(
                 "INSERT INTO students (student_code, name, grade, section, photo) VALUES (?, ?, ?, ?, ?)",
-                (code, name, grade, section, self.photo_data)
-            )
+                (code, name, grade, section, self.photo_data))
             conn.commit()
             log_event(self.username, "Agregar alumno", grade, section)
             messagebox.showinfo("Éxito", "Alumno registrado con foto guardada en la base de datos.")
@@ -406,35 +403,54 @@ class RegisterStudentApp:
             messagebox.showerror("Error", "Debes ingresar el código del alumno antes de tomar la foto.")
             return
 
-        cap = cv2.VideoCapture(0)
-        messagebox.showinfo("Foto", "Se abrirá la cámara. Presiona 's' para guardar la imagen del alumno.")
+        cap = None
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                messagebox.showerror("Error", "No se pudo abrir la cámara.")
+                return
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            cv2.imshow("Captura de Foto - Presiona 's' para guardar", frame)
-            key = cv2.waitKey(1)
-            if key == ord('s'):
-                ret2, buf = cv2.imencode('.jpg', frame)
-                if ret2:
-                    self.photo_data = buf.tobytes()
-                    messagebox.showinfo("Foto guardada", "Foto capturada y lista para registrar.")
-                    self.register_student()
-                break
-        cap.release()
-        cv2.destroyAllWindows()
+            messagebox.showinfo("Foto", "Se abrirá la cámara. Presiona 's' para guardar la imagen del alumno.")
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    messagebox.showerror("Error", "No se pudo capturar imagen de la cámara.")
+                    break
+                
+                cv2.imshow("Captura de Foto - Presiona 's' para guardar", frame)
+                key = cv2.waitKey(1)
+                
+                if key == ord('s'):
+                    ret2, buf = cv2.imencode('.jpg', frame)
+                    if ret2:
+                        self.photo_data = buf.tobytes()
+                        messagebox.showinfo("Foto guardada", "Foto capturada y lista para registrar.")
+                        self.register_student()
+                    break
+                elif key == 27:  # Tecla ESC
+                    break
+                    
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al capturar foto: {str(e)}")
+        finally:
+            if cap is not None and cap.isOpened():
+                cap.release()
+            cv2.destroyAllWindows()
 
     def upload_photo(self):
-        file_path = filedialog.askopenfilename(filetypes=[("JPG/PNG Files", "*.jpg *.png")])
-        if file_path:
-            with open(file_path, 'rb') as f:
-                self.photo_data = f.read()
-            messagebox.showinfo("Foto cargada", "Foto cargada y lista para registrar.")
-            self.register_student()
+        try:
+            file_path = filedialog.askopenfilename(filetypes=[("JPG/PNG Files", "*.jpg *.png")])
+            if file_path:
+                with open(file_path, 'rb') as f:
+                    self.photo_data = f.read()
+                messagebox.showinfo("Foto cargada", "Foto cargada y lista para registrar.")
+                self.register_student()
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al cargar foto: {str(e)}")
 
 # ------------------------------------------------------------
-# Ventana Tomar Asistencia
+# Ventana Tomar Asistencia (Versión Mejorada)
 # ------------------------------------------------------------
 class TakeAttendanceApp:
     def __init__(self, master, username):
@@ -475,15 +491,13 @@ class TakeAttendanceApp:
         self.btn_export = tk.Button(master, text="Exportar Asistencia del Día", width=25, command=self.export_today_attendance)
         self.btn_export.pack(pady=5)
 
-        self.display_label = tk.Label(master)
-        self.display_label.pack(pady=10)
-
         self.text = tk.Text(master, height=10, width=90)
         self.text.pack(pady=10)
 
         self.dataset_dir = os.path.join(script_dir, "dataset")
         if not os.path.exists(self.dataset_dir):
-            messagebox.showerror("Error", f"No existe la carpeta de imágenes de referencia: {self.dataset_dir}")
+            os.makedirs(self.dataset_dir)
+            self.text.insert(tk.END, "Se creó la carpeta dataset. Por favor agregue fotos de referencia.\n")
 
         self.known_face_encodings = []
         self.known_face_names = []
@@ -522,269 +536,395 @@ class TakeAttendanceApp:
             return "", ""
 
     def load_known_faces(self):
-        self.known_face_encodings = []
-        self.known_face_names = []
-        for filename in os.listdir(self.dataset_dir):
-            if filename.lower().endswith((".jpg", ".png")):
-                path = os.path.join(self.dataset_dir, filename)
-                image = face_recognition.load_image_file(path)
-                encodings = face_recognition.face_encodings(image)
-                if encodings:
-                    self.known_face_encodings.append(encodings[0])
-                    name = os.path.splitext(filename)[0]
-                    self.known_face_names.append(name)
+        try:
+            self.known_face_encodings = []
+            self.known_face_names = []
+            
+            for filename in os.listdir(self.dataset_dir):
+                if filename.lower().endswith((".jpg", ".png")):
+                    path = os.path.join(self.dataset_dir, filename)
+                    try:
+                        image = face_recognition.load_image_file(path)
+                        encodings = face_recognition.face_encodings(image)
+                        
+                        if encodings:
+                            self.known_face_encodings.append(encodings[0])
+                            name = os.path.splitext(filename)[0]
+                            self.known_face_names.append(name)
+                        else:
+                            self.text.insert(tk.END, f"No se detectaron rostros en: {filename}\n")
+                    except Exception as e:
+                        self.text.insert(tk.END, f"Error procesando {filename}: {str(e)}\n")
+                        
+            self.text.insert(tk.END, f"Cargados {len(self.known_face_names)} rostros conocidos.\n")
+        except Exception as e:
+            self.text.insert(tk.END, f"Error al cargar rostros conocidos: {str(e)}\n")
 
     def upload_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Archivos de imagen y video", "*.jpg *.png *.mp4 *.avi")])
-        if not file_path:
-            return
-        ext = os.path.splitext(file_path)[1].lower()
-        if ext in [".jpg", ".png"]:
-            self.process_image(file_path)
-            self.show_image(file_path)
-        elif ext in [".mp4", ".avi"]:
-            self.process_video(file_path)
-            self.recorded_video_path = file_path
-            self.text.insert(tk.END, f"Video cargado: {file_path}\n")
-            self.show_video_controls()
-        else:
-            messagebox.showerror("Error", "Formato no soportado.")
+        try:
+            file_path = filedialog.askopenfilename(filetypes=[("Archivos de imagen y video", "*.jpg *.png *.mp4 *.avi")])
+            if not file_path:
+                return
+                
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in [".jpg", ".png"]:
+                self.process_image(file_path)
+            elif ext in [".mp4", ".avi"]:
+                self.process_video(file_path)
+                self.recorded_video_path = file_path
+            else:
+                messagebox.showerror("Error", "Formato no soportado.")
+        except Exception as e:
+            self.text.insert(tk.END, f"Error al cargar archivo: {str(e)}\n")
 
     def process_image(self, image_path):
-        image = face_recognition.load_image_file(image_path)
-        face_locations = face_recognition.face_locations(image)
-        face_encodings = face_recognition.face_encodings(image, face_locations)
-
-        presentes = set()
-        for face_encoding in face_encodings:
-            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.5)
-            face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-            best_match_index = np.argmin(face_distances)
-            if matches[best_match_index]:
-                presentes.add(self.known_face_names[best_match_index])
-
-        if presentes:
-            self.register_attendance(presentes)
-            self.text.insert(tk.END, f"Asistencia tomada: {', '.join(presentes)}\n")
-        else:
-            self.text.insert(tk.END, "No se reconocieron rostros conocidos.\n")
-
-    def process_video(self, video_path):
-        cap = cv2.VideoCapture(video_path)
-        presentes = set()
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            rgb_frame = frame[:, :, ::-1]
-            face_locations = face_recognition.face_locations(rgb_frame)
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+        try:
+            self.text.insert(tk.END, f"Procesando imagen: {image_path}\n")
+            self.master.update()
+            
+            image = face_recognition.load_image_file(image_path)
+            face_locations = face_recognition.face_locations(image)
+            
+            if not face_locations:
+                self.text.insert(tk.END, "No se detectaron rostros en la imagen.\n")
+                return
+                
+            face_encodings = face_recognition.face_encodings(image, face_locations)
+            presentes = set()
+            
             for face_encoding in face_encodings:
                 matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.5)
                 face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-                best_match_index = np.argmin(face_distances)
-                if matches[best_match_index]:
-                    presentes.add(self.known_face_names[best_match_index])
-
-        cap.release()
-
-        if presentes:
-            self.register_attendance(presentes)
-            self.text.insert(tk.END, f"Asistencia tomada: {', '.join(presentes)}\n")
-        else:
-            self.text.insert(tk.END, "No se reconocieron rostros conocidos en el video.\n")
-
-    def take_photo(self):
-        cap = cv2.VideoCapture(0)
-        self.text.insert(tk.END, "Abriendo cámara para tomar foto...\n")
-        messagebox.showinfo("Foto", "Se abrirá la cámara. Presiona 's' para tomar la foto.")
-
-        presentes = set()
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            cv2.imshow("Tomar Foto - Presiona 's' para capturar", frame)
-            key = cv2.waitKey(1)
-            if key == ord('s'):
-                temp_img_path = "temp_photo.jpg"
-                cv2.imwrite(temp_img_path, frame)
-                rgb_frame = frame[:, :, ::-1]
-                face_locations = face_recognition.face_locations(rgb_frame)
-                face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-                for face_encoding in face_encodings:
-                    matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.5)
-                    face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                
+                if True in matches:  # Si hay al menos una coincidencia
                     best_match_index = np.argmin(face_distances)
                     if matches[best_match_index]:
-                        presentes.add(self.known_face_names[best_match_index])
-                break
-        cap.release()
-        cv2.destroyAllWindows()
+                        student_code = self.known_face_names[best_match_index]
+                        
+                        # Verificar si ya tiene asistencia hoy
+                        if not self.check_attendance_today(student_code):
+                            presentes.add(student_code)
+                        else:
+                            self.text.insert(tk.END, f"{student_code} ya tiene asistencia registrada hoy.\n")
 
-        if presentes:
-            self.register_attendance(presentes)
-            self.text.insert(tk.END, f"Asistencia tomada (foto): {', '.join(presentes)}\n")
-        else:
-            self.text.insert(tk.END, "No se reconocieron rostros conocidos en la foto.\n")
+            if presentes:
+                self.register_attendance(presentes)
+                self.text.insert(tk.END, f"Asistencia registrada: {', '.join(presentes)}\n")
+            else:
+                self.text.insert(tk.END, "No se reconocieron rostros nuevos para registrar asistencia.\n")
+                
+        except Exception as e:
+            self.text.insert(tk.END, f"Error al procesar imagen: {str(e)}\n")
 
-        self.show_image(temp_img_path)
+    def process_video(self, video_path):
+        try:
+            self.text.insert(tk.END, "Procesando video...\n")
+            self.master.update()
+            
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                self.text.insert(tk.END, "Error al abrir el video.\n")
+                return
 
-    def record_video(self):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_video_path = os.path.join(script_dir, "temp_record.avi")
+            presentes = set()
+            frame_count = 0
+            process_every_n_frames = 5  # Procesar 1 de cada 5 frames para mejorar rendimiento
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            messagebox.showerror("Error", "No se pudo abrir la cámara para grabar.")
-            return
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-        out = cv2.VideoWriter(temp_video_path, fourcc, 20.0, (640,480))
+                frame_count += 1
+                if frame_count % process_every_n_frames != 0:
+                    continue
 
-        messagebox.showinfo("Grabación", "Presiona 'q' para detener la grabación.")
+                try:
+                    rgb_frame = frame[:, :, ::-1]
+                    face_locations = face_recognition.face_locations(rgb_frame)
+                    
+                    if not face_locations:
+                        continue
+                        
+                    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                    
+                    for face_encoding in face_encodings:
+                        matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.5)
+                        face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                        
+                        if True in matches:
+                            best_match_index = np.argmin(face_distances)
+                            if matches[best_match_index]:
+                                student_code = self.known_face_names[best_match_index]
+                                
+                                # Verificar si ya tiene asistencia hoy
+                                if not self.check_attendance_today(student_code):
+                                    presentes.add(student_code)
+                                else:
+                                    self.text.insert(tk.END, f"{student_code} ya tiene asistencia registrada hoy.\n")
+                except Exception as e:
+                    continue
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            out.write(frame)
-            cv2.imshow('Grabando Video - Presiona q para detener', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            cap.release()
 
-        cap.release()
-        out.release()
-        cv2.destroyAllWindows()
+            if presentes:
+                self.register_attendance(presentes)
+                self.text.insert(tk.END, f"Rostros detectados: {', '.join(presentes)}\n")
+            else:
+                self.text.insert(tk.END, "No se reconocieron rostros nuevos para registrar asistencia.\n")
+                
+        except Exception as e:
+            self.text.insert(tk.END, f"Error al procesar video: {str(e)}\n")
+            if 'cap' in locals() and cap.isOpened():
+                cap.release()
 
-        self.process_video(temp_video_path)
-        self.recorded_video_path = temp_video_path
-        self.text.insert(tk.END, f"Video grabado: {temp_video_path}\n")
-        self.show_video_controls()
-
-    def show_image(self, image_path):
-        img = Image.open(image_path)
-        img = img.resize((480, 360))
-        imgtk = ImageTk.PhotoImage(img)
-        self.display_label.imgtk = imgtk
-        self.display_label.configure(image=imgtk)
-
-        self.clear_controls()
-        btn_save = tk.Button(self.master, text="Guardar Imagen", width=20, command=lambda: self.save_file(image_path))
-        btn_save.pack(pady=5)
-        btn_clear = tk.Button(self.master, text="Limpiar Vista", width=20, command=self.clear_display)
-        btn_clear.pack(pady=5)
-
-    def show_video_controls(self):
-        self.clear_controls()
-        btn_play = tk.Button(self.master, text="Reproducir Video", width=20, command=self.play_recorded_video)
-        btn_play.pack(pady=5)
-        btn_save = tk.Button(self.master, text="Guardar Video", width=20, command=lambda: self.save_file(self.recorded_video_path))
-        btn_save.pack(pady=5)
-        btn_clear = tk.Button(self.master, text="Limpiar Vista", width=20, command=self.clear_display)
-        btn_clear.pack(pady=5)
-
-    def clear_controls(self):
-        for widget in self.master.pack_slaves():
-            if isinstance(widget, tk.Button) and widget not in [self.btn_upload, self.btn_take_photo, self.btn_record_video, self.btn_export]:
-                widget.destroy()
-
-    def clear_display(self):
-        self.display_label.configure(image='')
-        self.display_label.imgtk = None
-        self.text.insert(tk.END, "Vista limpiada.\n")
-        self.clear_controls()
-
-    def save_file(self, src_path):
-        if not src_path or not os.path.exists(src_path):
-            messagebox.showerror("Error", "No hay archivo para guardar.")
-            return
-        dest_path = filedialog.asksaveasfilename(defaultextension=os.path.splitext(src_path)[1],
-                                                 filetypes=[("Archivos", f"*{os.path.splitext(src_path)[1]}")])
-        if dest_path:
-            try:
-                with open(src_path, 'rb') as fsrc, open(dest_path, 'wb') as fdst:
-                    fdst.write(fsrc.read())
-                messagebox.showinfo("Éxito", f"Archivo guardado en:\n{dest_path}")
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo guardar el archivo:\n{e}")
-
-    def play_recorded_video(self):
-        if not self.recorded_video_path or not os.path.exists(self.recorded_video_path):
-            messagebox.showerror("Error", "No hay video para reproducir.")
-            return
-        cap = cv2.VideoCapture(self.recorded_video_path)
-        self.text.insert(tk.END, f"Reproduciendo video: {self.recorded_video_path}\n")
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            cv2.imshow("Video Grabado", frame)
-            if cv2.waitKey(25) & 0xFF == ord('q'):
-                break
-        cap.release()
-        cv2.destroyAllWindows()
-
-    def register_attendance(self, presentes):
-        # Log del evento de asistencia
-        log_event(self.username, "Tomar asistencia", self.grade, self.section)
-
-        now = datetime.now()
-        fecha_str = now.strftime("%Y-%m-%d")
-        hora_str = now.strftime("%H:%M:%S")
-
-        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attendance_records.csv")
-        df = pd.DataFrame(columns=["Nombre", "Fecha", "Hora"])
-        if os.path.exists(csv_path):
-            df = pd.read_csv(csv_path)
-        for nombre in presentes:
-            if not ((df["Nombre"] == nombre) & (df["Fecha"] == fecha_str)).any():
-                df.loc[len(df)] = {"Nombre": nombre, "Fecha": fecha_str, "Hora": hora_str}
-        df.to_csv(csv_path, index=False)
-
-        conn = sqlite3.connect("database/attendance.db")
-        cursor = conn.cursor()
-        for nombre in presentes:
-            cursor.execute(
-                "SELECT student_code, grade, section FROM students WHERE student_code=?",
-                (nombre,)
-            )
-            res = cursor.fetchone()
-            if res:
-                student_code, grade, section = res
-                cursor.execute("""
-                    INSERT INTO attendance (student_code, name, grade, section, timestamp)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (student_code, nombre, grade, section, now.strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        conn.close()
-
-    def export_today_attendance(self):
-        fecha_str = datetime.now().strftime("%Y-%m-%d")
-        docente = self.username.replace(" ", "_")
-        filename = f"Asistencia_{self.grade}_{self.section}_{docente}_{fecha_str}.csv"
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        export_path = os.path.join(script_dir, filename)
-
+    def check_attendance_today(self, student_code):
+        """Verifica si el estudiante ya tiene asistencia registrada hoy"""
+        today = datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect("database/attendance.db")
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT student_code, name, grade, section, timestamp FROM attendance
-            WHERE date(timestamp) = ?
-              AND grade = ?
-              AND section = ?
-        """, (fecha_str, self.grade, self.section))
-        records = cursor.fetchall()
+            SELECT 1 FROM attendance 
+            WHERE student_code = ? 
+            AND date(timestamp) = ?
+            LIMIT 1
+        """, (student_code, today))
+        result = cursor.fetchone()
         conn.close()
+        return result is not None
 
-        if not records:
-            messagebox.showinfo("Info", "No hay registros de asistencia para el día de hoy.")
-            return
+    def take_photo(self):
+        cap = None
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                self.text.insert(tk.END, "Error: No se pudo abrir la cámara.\n")
+                return
 
-        df = pd.DataFrame(records, columns=["Código", "Nombre", "Grado", "Sección", "FechaHora"])
-        df.to_csv(export_path, index=False)
-        messagebox.showinfo("Éxito", f"Asistencia exportada a:\n{export_path}")
+            self.text.insert(tk.END, "Grabando video... Presiona 'q' para detener.\n")
+            self.master.update()
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    self.text.insert(tk.END, "Error al capturar frame de la cámara.\n")
+                    break
+
+                cv2.imshow("Tomar Foto - Presiona 'q' para salir", frame)
+                key = cv2.waitKey(1) & 0xFF
+                
+                if key == ord('q'):
+                    self.text.insert(tk.END, "Grabación finalizada por el usuario.\n")
+                    break
+                    
+                # Tomar foto cuando se presiona 's'
+                if key == ord('s'):
+                    temp_img_path = "temp_photo.jpg"
+                    cv2.imwrite(temp_img_path, frame)
+                    
+                    # Procesar la imagen capturada
+                    try:
+                        image = face_recognition.load_image_file(temp_img_path)
+                        face_locations = face_recognition.face_locations(image)
+                        
+                        if not face_locations:
+                            self.text.insert(tk.END, "No se detectaron rostros en la foto.\n")
+                            continue
+                            
+                        face_encodings = face_recognition.face_encodings(image, face_locations)
+                        presentes = set()
+                        
+                        for face_encoding in face_encodings:
+                            matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.5)
+                            face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                            
+                            if True in matches:
+                                best_match_index = np.argmin(face_distances)
+                                if matches[best_match_index]:
+                                    student_code = self.known_face_names[best_match_index]
+                                    
+                                    # Verificar si ya tiene asistencia hoy
+                                    if not self.check_attendance_today(student_code):
+                                        presentes.add(student_code)
+                                    else:
+                                        self.text.insert(tk.END, f"{student_code} ya tiene asistencia registrada hoy.\n")
+
+                        if presentes:
+                            self.register_attendance(presentes)
+                            self.text.insert(tk.END, f"Rostros detectados: {', '.join(presentes)}\n")
+                        else:
+                            self.text.insert(tk.END, "No se reconocieron rostros nuevos para registrar asistencia.\n")
+                            
+                    except Exception as e:
+                        self.text.insert(tk.END, f"Error al procesar foto: {str(e)}\n")
+
+        except Exception as e:
+            self.text.insert(tk.END, f"Error en la captura de foto: {str(e)}\n")
+        finally:
+            if cap is not None and cap.isOpened():
+                cap.release()
+            cv2.destroyAllWindows()
+
+    def record_video(self):
+        cap = None
+        video_writer = None
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            temp_video_path = os.path.join(script_dir, "temp_record.avi")
+
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                messagebox.showerror("Error", "No se pudo abrir la cámara para grabar.")
+                return
+
+            # Obtener dimensiones del frame
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            video_writer = cv2.VideoWriter(temp_video_path, fourcc, 20.0, (frame_width, frame_height))
+
+            self.text.insert(tk.END, "Grabando video... Presiona 'q' para detener.\n")
+            self.master.update()
+
+            recording_start = datetime.now()
+            max_recording_seconds = 30  # Límite de 30 segundos
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    self.text.insert(tk.END, "Error al capturar frame.\n")
+                    break
+
+                # Mostrar tiempo de grabación
+                elapsed = (datetime.now() - recording_start).total_seconds()
+                if elapsed > max_recording_seconds:
+                    self.text.insert(tk.END, f"Límite de {max_recording_seconds} segundos alcanzado.\n")
+                    break
+
+                cv2.putText(frame, f"Grabando: {int(elapsed)}s", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.imshow('Grabando Video - Presiona q para detener', frame)
+                video_writer.write(frame)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.text.insert(tk.END, "Grabación finalizada por el usuario.\n")
+                    break
+
+            video_writer.release()
+            self.recorded_video_path = temp_video_path
+            
+            # Procesar el video grabado
+            self.process_video(temp_video_path)
+            
+        except Exception as e:
+            self.text.insert(tk.END, f"Error en la grabación de video: {str(e)}\n")
+        finally:
+            if video_writer is not None:
+                video_writer.release()
+            if cap is not None and cap.isOpened():
+                cap.release()
+            cv2.destroyAllWindows()
+
+    def register_attendance(self, student_codes):
+        try:
+            # Log del evento de asistencia
+            log_event(self.username, "Tomar asistencia", self.grade, self.section)
+
+            now = datetime.now()
+            fecha_str = now.strftime("%Y-%m-%d")
+            hora_str = now.strftime("%H:%M:%S")
+
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            csv_path = os.path.join(script_dir, "attendance_records.csv")
+            
+            # Verificar si el archivo existe, si no, crear uno nuevo
+            if not os.path.exists(csv_path):
+                df = pd.DataFrame(columns=["Código", "Fecha", "Hora"])
+                df.to_csv(csv_path, index=False)
+            else:
+                df = pd.read_csv(csv_path)
+
+            conn = sqlite3.connect("database/attendance.db")
+            cursor = conn.cursor()
+            
+            for code in student_codes:
+                # Verificar nuevamente por si acaso
+                if not self.check_attendance_today(code):
+                    # Agregar al CSV
+                    df.loc[len(df)] = {"Código": code, "Fecha": fecha_str, "Hora": hora_str}
+                    
+                    # Agregar a la base de datos
+                    cursor.execute("""
+                        SELECT grade, section FROM students WHERE student_code = ?
+                    """, (code,))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        grade, section = result
+                        cursor.execute("""
+                            INSERT INTO attendance (student_code, name, grade, section, timestamp)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (code, code, grade, section, now.strftime("%Y-%m-%d %H:%M:%S")))
+            
+            # Guardar cambios
+            df.to_csv(csv_path, index=False)
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            self.text.insert(tk.END, f"Error al registrar asistencia: {str(e)}\n")
+
+    def export_today_attendance(self):
+        try:
+            # Obtener la fecha actual en el formato deseado
+            today = datetime.now()
+            fecha_str = today.strftime("%Y-%m-%d")
+            docente = self.username.replace(" ", "_")
+            
+            # Formatear el nombre del archivo exactamente como se solicita
+            filename = f"Asistencia_{self.grade}_{self.section}_{docente}_{today.year}_{today.month:02d}_{today.day:02d}.csv"
+            
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            exports_dir = os.path.join(script_dir, "exports")
+            
+            # Crear directorio si no existe
+            if not os.path.exists(exports_dir):
+                os.makedirs(exports_dir)
+                
+            export_path = os.path.join(exports_dir, filename)
+
+            # Consulta SQL para obtener solo la asistencia del día actual
+            conn = sqlite3.connect("database/attendance.db")
+            query = """
+                SELECT student_code as Código, 
+                       grade as Grado, 
+                       section as Sección, 
+                       strftime('%H:%M:%S', timestamp) as Hora
+                FROM attendance
+                WHERE date(timestamp) = ?
+                  AND grade = ?
+                  AND section = ?
+                ORDER BY timestamp
+            """
+            
+            cursor = conn.cursor()
+            cursor.execute(query, (fecha_str, self.grade, self.section))
+            records = cursor.fetchall()
+            conn.close()
+
+            if not records:
+                messagebox.showinfo("Info", "No hay registros de asistencia para el día de hoy.")
+                return
+
+            # Crear DataFrame y exportar a CSV
+            df = pd.DataFrame(records, columns=["Código", "Grado", "Sección", "Hora"])
+            df.to_csv(export_path, index=False, encoding='utf-8-sig')  # utf-8-sig para caracteres especiales
+            
+            messagebox.showinfo("Éxito", f"Asistencia del día exportada a:\n{export_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo exportar la asistencia: {str(e)}")
 
 # ------------------------------------------------------------
 # Ejecución principal
